@@ -1,6 +1,8 @@
 import socket
 import sys
 import os
+import logging
+
 
 LISTEN_MODE = '0'
 USER_MODE = '1'
@@ -47,21 +49,32 @@ def CheckInput(inputToCheck):
     return CheckIP(inputToCheck[2])
 
 
+def ReadMsgTillNewLine(client_socket):
+    allMsg = ""
+    while True:
+        msg = client_socket.recv(1).decode()
+        if msg == '\n':
+            break
+        allMsg += msg
+    return allMsg
+
+
 def HandleListen(server_ip, server_port, listen_port):
+
     #  Start connection with server
     serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     serverSocket.connect((server_ip, server_port))
 
     #  Get files list
     files = [f for f in os.listdir('.') if os.path.isfile(f)]
-    stringToSend = '1 ' + str(listen_port) + ' ' + ','.join(files)
+    stringToSend = '1 ' + str(listen_port) + ' ' + ','.join(files) + '\n'
 
-    #  Send server files list
-    print("Sending " + stringToSend)
+    #  Send server files list and close connection
+    logging.debug("Sending \"" + stringToSend[:-1] + "\"")
     serverSocket.send(stringToSend.encode())
+    serverSocket.close()
 
     #  Open TCP server and wait for clients
-
     listeningSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listeningSocket.bind(("0.0.0.0", listen_port))
     listeningSocket.listen()
@@ -74,8 +87,8 @@ def ListenAndSend(listeningSocket, files):
         clientSocket, addr = listeningSocket.accept()
 
         # Get desired file name
-        fileName = clientSocket.recv(BUFFER_SIZE).decode()[:-1]
-        print("Uploading " + fileName)
+        fileName = ReadMsgTillNewLine(clientSocket)
+        logging.debug("Uploading " + fileName)
 
         if fileName in files:  # If file in folder
             #   Open file and send data
@@ -84,7 +97,7 @@ def ListenAndSend(listeningSocket, files):
             while readData:
                 clientSocket.send(readData)
                 readData = fileToSend.read(BUFFER_SIZE)
-            print("Done Sending")
+            logging.debug("Done Sending")
             fileToSend.close()
         clientSocket.shutdown(socket.SHUT_RDWR)
         clientSocket.close()
@@ -95,20 +108,23 @@ def HandleUser(server_ip, server_port):
     stringToSearch = input("Search: ")
 
     #  Connect to server and search
-    socketToServer = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    socketToServer.connect((server_ip, server_port))
-    message = "2 " + stringToSearch
+    try:
+        socketToServer = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        socketToServer.connect((server_ip, server_port))
+    except socket.error:
+        logging.debug("Could not connect to server!")
+        return
+    message = "2 " + stringToSearch + '\n'
     socketToServer.send(message.encode())
-    result = socketToServer.recv(BUFFER_SIZE).decode()  # "[Name] [IP] [Port],[] [] [],...\n"
-    result = result[:-1]  # Delete "\n"
+    result = ReadMsgTillNewLine(socketToServer)  # "[Name] [IP] [Port],[] [] [],...\n"
     socketToServer.close()
 
     # If no files found stop
-    if not result:
-        print("No files found")
+    if not result or result == "":
+        logging.debug("No files found")
         return
 
-    #  parse search result in list
+    #  Parse search result in list
     filesDic = {}
     filesList = []
     resultArray = result.split(",")  # [ ([Name] [IP] [Port]) , ([] [] []) , ... ]
@@ -123,14 +139,24 @@ def HandleUser(server_ip, server_port):
         i += 1
 
     #  Get choice from user
-    fileChooseNumber = int(input("Choose: ")) - 1
+    fileChooseNumber = 0
+    try:
+        fileChooseNumber = int(input("Choose: ")) - 1
+    except ValueError:
+        logging.debug("Could not convert choice number to int")
+        return
+
     if 0 <= fileChooseNumber < len(filesList):
         file_name, sender_ip, sender_port = filesList[fileChooseNumber]
         sender_port = int(sender_port)
-        #  Start connection with server
-        socketToSender = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        socketToSender.connect((sender_ip, sender_port))
 
+        #  Start connection with server
+        try:
+            socketToSender = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            socketToSender.connect((sender_ip, sender_port))
+        except socket.error:
+            logging.debug("Could not connect to sender")
+            return
         #  Send sender the file name
         socketToSender.send(file_name.encode() + "\n".encode())
 
@@ -143,6 +169,9 @@ def HandleUser(server_ip, server_port):
         #  Close connection and file
         fileToWrite.close()
         socketToSender.close()
+    else:
+        logging.debug("Bad choice")
+        return
 
 
 if __name__ == "__main__":  # INPUT = 1:0 2:127.0.0.1 3:12345 4:12346
@@ -154,4 +183,5 @@ if __name__ == "__main__":  # INPUT = 1:0 2:127.0.0.1 3:12345 4:12346
         listenPort = int(sys.argv[4])
         HandleListen(mainIp, mainPort, listenPort)
     else:
-        HandleUser(mainIp, mainPort)
+        while True:
+            HandleUser(mainIp, mainPort)
